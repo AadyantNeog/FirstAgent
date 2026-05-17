@@ -1,0 +1,14 @@
+{
+  "name": "ollama-agentic-loop-demo",
+  "version": "1.0.0",
+  "description": "Minimal Node.js agentic loop with tool calling using Ollama.",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "example:calculator": "node src/index.js \"Create a simple calculator web app inside ./generated-apps/calculator\""
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
