@@ -58,7 +58,7 @@ This file contains the raw Ollama API call.
 It uses:
 
 - `POST http://127.0.0.1:11434/api/chat`
-- the model `qwen3.5:9b-8k`
+- the model configured in `src/config.js` such as `qwen3.5-9b-32k`
 - `format: "json"` so the model is pushed toward valid JSON output
 
 This keeps the Ollama integration isolated from the agent logic.
@@ -173,9 +173,30 @@ If you want to evolve this project, these are strong next additions:
 1. Add JSON schema validation for tool inputs.
 2. Add a `run_command` tool with strict allowlists.
 3. Add a `replace_in_file` tool so the agent can edit large files more safely.
-4. Add step-by-step logging to a file for observability.
+4. Expand the token usage logging into persistent step-by-step logs on disk.
 5. Add a planning phase before tool use.
 6. Add evaluation tasks to test whether the agent can reliably build simple apps.
+
+## Prompt and token logging
+
+This version now prints both token usage and a short per-step trace of what the model was working on.
+
+It reads the counts from the Ollama chat response fields:
+
+- `prompt_eval_count` for input tokens
+- `eval_count` for output tokens
+
+Flow:
+
+1. `src/ollama.js` returns both the model content and token usage metadata.
+2. `src/agent.js` accumulates usage for each loop step and records:
+   - the latest request context sent into the model
+   - the model response type
+   - the tool name and reason when a tool is selected
+   - a short preview of the JSON output
+3. `src/index.js` prints that step-by-step trace plus the overall token totals after completion.
+
+This makes runs easier to inspect because you can now see not just how many tokens were used, but also what each prompt was about and what the model decided to output.
 
 ## How to run
 

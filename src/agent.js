@@ -2,6 +2,8 @@ import { MAX_STEPS } from "./config.js";
 import { callOllama } from "./ollama.js";
 import { runTool, toolDefinitions } from "./tools.js";
 
+const PREVIEW_LIMIT = 220;
+
 function buildSystemPrompt() {
   return [
     "You are a local coding agent that can inspect files and create small apps.",
@@ -27,6 +29,40 @@ function parseJsonResponse(raw) {
   }
 }
 
+function createPreview(value, maxLength = PREVIEW_LIMIT) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+
+  if (text.length <= maxLength) {
+    return text;
+  }
+
+  return `${text.slice(0, maxLength - 3)}...`;
+}
+
+function describeLatestRequest(messages) {
+  const latestUserMessage = [...messages].reverse().find((message) => message.role === "user");
+
+  if (!latestUserMessage) {
+    return "No user prompt available.";
+  }
+
+  const content = latestUserMessage.content;
+
+  try {
+    const parsed = JSON.parse(content);
+
+    if (parsed?.type === "tool_result") {
+      return createPreview(
+        `Tool result for ${parsed.tool}: ${JSON.stringify(parsed.result)}`
+      );
+    }
+  } catch {
+    return createPreview(content);
+  }
+
+  return createPreview(content);
+}
+
 export async function runAgent(userGoal) {
   const messages = [
     {
@@ -38,15 +74,45 @@ export async function runAgent(userGoal) {
       content: userGoal
     }
   ];
+  const usage = {
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    prompts: []
+  };
 
   for (let step = 1; step <= MAX_STEPS; step += 1) {
-    const raw = await callOllama(messages);
+    const { content: raw, usage: stepUsage } = await callOllama(messages);
+    const promptSummary = describeLatestRequest(messages);
+    usage.totalInputTokens += stepUsage.inputTokens;
+    usage.totalOutputTokens += stepUsage.outputTokens;
+
     const action = parseJsonResponse(raw);
+    const promptLog = {
+      step,
+      inputTokens: stepUsage.inputTokens,
+      outputTokens: stepUsage.outputTokens,
+      requested: promptSummary,
+      responseType: action.type ?? "unknown",
+      responsePreview: createPreview(raw)
+    };
+
+    if (action.type === "tool_call") {
+      promptLog.tool = action.tool ?? "unknown";
+      promptLog.reason = createPreview(action.reason || "No reason provided.");
+      promptLog.toolInput = createPreview(JSON.stringify(action.input ?? {}));
+    }
+
+    if (action.type === "final") {
+      promptLog.finalMessage = createPreview(action.message || "");
+    }
+
+    usage.prompts.push(promptLog);
 
     if (action.type === "final") {
       return {
         steps: step,
-        final: action
+        final: action,
+        usage
       };
     }
 

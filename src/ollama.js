@@ -21,10 +21,17 @@ export async function callOllama(messages) {
 
   const data = await response.json();
   const content = data?.message?.content;
+  const usage = {
+    inputTokens: data?.prompt_eval_count ?? 0,
+    outputTokens: data?.eval_count ?? 0
+  };
 
   if (!content) {
     throw new Error("Ollama response did not include message content.");
   }
 
-  return content;
+  return {
+    content,
+    usage
+  };
 }
