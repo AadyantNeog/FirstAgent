@@ -4,7 +4,7 @@ This project is intentionally small so you can trace the full agent flow without
 
 ## What this project does
 
-It builds a basic coding agent in Node.js that:
+It builds a basic coding agent in Node.js and TypeScript that:
 
 - receives a user goal from the command line
 - sends that goal plus tool definitions to an Ollama model
@@ -20,17 +20,20 @@ That repeated think -> act -> observe -> think cycle is the core agentic loop.
 
 ## File map
 
-### `src/index.js`
+### `src/index.ts`
 
-This is the CLI entry point.
+This is the TypeScript CLI entry point.
 
 Responsibilities:
 
 - reads the user goal from the command line
+- handles `--help`
 - starts the agent
 - prints the final result
 
-### `src/agent.js`
+The compiled runtime entry point is `dist/index.js`, which is what the npm scripts execute.
+
+### `src/agent.ts`
 
 This is the heart of the project.
 
@@ -51,19 +54,19 @@ The important pattern is:
 3. Give the tool result back to the model.
 4. Repeat.
 
-### `src/ollama.js`
+### `src/ollama.ts`
 
 This file contains the raw Ollama API call.
 
 It uses:
 
 - `POST http://127.0.0.1:11434/api/chat`
-- the model configured in `src/config.js` such as `qwen3.5-9b-32k`
+- the model configured in `src/config.ts` such as `qwen3.5-9b-32k`
 - `format: "json"` so the model is pushed toward valid JSON output
 
 This keeps the Ollama integration isolated from the agent logic.
 
-### `src/tools.js`
+### `src/tools.ts`
 
 This file defines the tool system.
 
@@ -73,7 +76,7 @@ There are two layers:
    These are shown to the model so it knows which tools exist.
 
 2. `toolHandlers`
-   These are the actual JavaScript functions that run on the machine.
+   These are the actual runtime functions that run on the machine.
 
 Current tools:
 
@@ -111,6 +114,8 @@ That separation is the key idea behind tool calling:
 ## Why the tools are restricted
 
 The agent only writes inside the current project workspace, and it is nudged to use `./generated-apps`.
+
+`generated-apps/` is treated as generated output, not maintained runtime source. The TypeScript migration excludes that folder from compilation, but the runtime still reads and writes there by default.
 
 That matters because agentic systems become unsafe very quickly if they can write anywhere on disk or run arbitrary shell commands too early.
 
@@ -188,23 +193,25 @@ It reads the counts from the Ollama chat response fields:
 
 Flow:
 
-1. `src/ollama.js` returns both the model content and token usage metadata.
-2. `src/agent.js` accumulates usage for each loop step and records:
+1. `src/ollama.ts` returns both the model content and token usage metadata.
+2. `src/agent.ts` accumulates usage for each loop step and records:
    - the latest request context sent into the model
    - the model response type
    - the tool name and reason when a tool is selected
    - a short preview of the JSON output
-3. `src/index.js` prints that step-by-step trace plus the overall token totals after completion.
+3. `src/index.ts` prints that step-by-step trace plus the overall token totals after completion.
 
 This makes runs easier to inspect because you can now see not just how many tokens were used, but also what each prompt was about and what the model decided to output.
 
 ## How to run
 
-Install nothing first. This project uses Node's built-in features.
+Install dependencies first, then build the TypeScript sources.
 
 Start Ollama separately so the local API is available, then run:
 
 ```bash
+npm install
+npm run build
 npm start -- "Create a simple calculator app in ./generated-apps/calculator"
 ```
 

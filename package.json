@@ -3,12 +3,18 @@
   "version": "1.0.0",
   "description": "Minimal Node.js agentic loop with tool calling using Ollama.",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node src/index.js",
-    "example:calculator": "node src/index.js \"Create a simple calculator web app inside ./generated-apps/calculator\""
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "test": "npm run build && node --test test/**/*.test.js",
+    "example:calculator": "node dist/index.js \"Create a simple calculator web app inside ./generated-apps/calculator\""
   },
   "engines": {
     "node": ">=18"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
   }
 }
