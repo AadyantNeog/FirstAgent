@@ -10,6 +10,7 @@ It builds a basic coding agent in Node.js and TypeScript that:
 - sends that goal plus tool definitions to an Ollama model
 - forces the model to answer in JSON
 - interprets the JSON as either:
+  - a plan
   - a tool call
   - a final answer
 - runs the requested tool
@@ -43,6 +44,7 @@ Responsibilities:
 - keeps the conversation history
 - calls the model
 - parses model output
+- validates model output with `zod`
 - runs tools
 - sends tool results back into the conversation
 - stops when the model returns a final answer
@@ -83,13 +85,26 @@ Current tools:
 - `list_files`
 - `read_file`
 - `write_file`
+- `replace_in_file`
 - `make_directory`
+- `run_command`
 
 This is enough for a small code-writing agent to create a simple app like a calculator.
+
+`run_command` is intentionally allowlisted. It can run project commands such as `npm run build` and `npm test`, but it does not provide unrestricted shell access.
 
 ## Why this counts as tool calling
 
 The model does not execute code directly. It only proposes an action in structured JSON, for example:
+
+```json
+{
+  "type": "plan",
+  "steps": ["Inspect the app folder", "Write the HTML, CSS, and JavaScript"]
+}
+```
+
+or:
 
 ```json
 {
@@ -160,13 +175,13 @@ Once this is clear, you can later compare it against:
 
 ## Limitations of this version
 
-This is intentionally minimal, so it has some real limitations:
+This is intentionally minimal, so it still has some real limitations:
 
-- it depends on the model returning valid JSON
-- it has no schema validator beyond basic parsing
-- it does not diff or patch files, it overwrites them
+- it depends on the model returning JSON
+- it validates JSON shapes with `zod`, but does not use a full formal protocol
+- it can do exact text replacement, but not general patch application
 - it cannot run the created app automatically
-- it only has filesystem tools
+- it only allows a small set of shell commands
 - it does not persist memory between runs
 
 These limitations are useful because each one suggests a natural next step.
@@ -175,16 +190,15 @@ These limitations are useful because each one suggests a natural next step.
 
 If you want to evolve this project, these are strong next additions:
 
-1. Add JSON schema validation for tool inputs.
-2. Add a `run_command` tool with strict allowlists.
-3. Add a `replace_in_file` tool so the agent can edit large files more safely.
-4. Expand the token usage logging into persistent step-by-step logs on disk.
-5. Add a planning phase before tool use.
-6. Add evaluation tasks to test whether the agent can reliably build simple apps.
+1. Add a browser preview tool so the agent can visually inspect generated apps.
+2. Add a patch-style editing tool for multi-line changes.
+3. Add better evaluation fixtures for known app-building tasks.
+4. Add model/config selection from the CLI.
+5. Add persistent memory for repeated project work.
 
 ## Prompt and token logging
 
-This version now prints both token usage and a short per-step trace of what the model was working on.
+This version prints token usage, a short per-step console trace, and can optionally write a structured JSON trace file.
 
 It reads the counts from the Ollama chat response fields:
 
@@ -197,11 +211,18 @@ Flow:
 2. `src/agent.ts` accumulates usage for each loop step and records:
    - the latest request context sent into the model
    - the model response type
+   - plan steps when the model returns a plan
    - the tool name and reason when a tool is selected
    - a short preview of the JSON output
 3. `src/index.ts` prints that step-by-step trace plus the overall token totals after completion.
 
 This makes runs easier to inspect because you can now see not just how many tokens were used, but also what each prompt was about and what the model decided to output.
+
+To write a full trace file under `.agent-runs/`, add `--trace`:
+
+```bash
+npm start -- --trace "Create a simple calculator app in ./generated-apps/calculator"
+```
 
 ## How to run
 
@@ -213,6 +234,14 @@ Start Ollama separately so the local API is available, then run:
 npm install
 npm run build
 npm start -- "Create a simple calculator app in ./generated-apps/calculator"
+```
+
+Useful CLI options:
+
+```bash
+npm start -- --trace "Create a simple app"
+npm start -- --max-steps 20 "Create a simple app"
+npm start -- --output-root generated-apps/custom "Create a simple app"
 ```
 
 ## Mental model to keep

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -72,6 +73,23 @@ test("parseJsonResponse accepts valid final payloads", async () => {
   });
 });
 
+test("parseJsonResponse accepts valid plan payloads", async () => {
+  const { parseJsonResponse } = await importDistModule("agent.js");
+  const result = parseJsonResponse(
+    JSON.stringify({
+      type: "plan",
+      steps: ["Inspect files", "Write app"],
+      message: "Short plan"
+    })
+  );
+
+  assert.deepEqual(result, {
+    type: "plan",
+    steps: ["Inspect files", "Write app"],
+    message: "Short plan"
+  });
+});
+
 test("normalizeInsideWorkspace rejects paths outside the workspace", async () => {
   const { normalizeInsideWorkspace } = await importDistModule("tools.js");
   assert.throws(
@@ -83,6 +101,61 @@ test("normalizeInsideWorkspace rejects paths outside the workspace", async () =>
 test("runTool rejects unknown tool names", async () => {
   const { runTool } = await importDistModule("tools.js");
   await assert.rejects(() => runTool("missing_tool", {}), /Unknown tool: missing_tool/);
+});
+
+test("replace_in_file replaces exact text and rejects missing text", async () => {
+  const { runTool } = await importDistModule("tools.js");
+  const targetPath = "generated-apps/test-tools/replace.txt";
+
+  await runTool("write_file", {
+    path: targetPath,
+    content: "hello old world old"
+  });
+
+  const replaceResult = await runTool("replace_in_file", {
+    path: targetPath,
+    search: "old",
+    replacement: "new"
+  });
+
+  assert.equal(replaceResult.replacements, 2);
+
+  const readResult = await runTool("read_file", {
+    path: targetPath
+  });
+  assert.equal(readResult.content, "hello new world new");
+
+  await assert.rejects(
+    () =>
+      runTool("replace_in_file", {
+        path: targetPath,
+        search: "missing",
+        replacement: "unused"
+      }),
+    /Search text was not found/
+  );
+});
+
+test("run_command rejects commands outside the allowlist", async () => {
+  const { runTool } = await importDistModule("tools.js");
+  await assert.rejects(
+    () =>
+      runTool("run_command", {
+        command: "node --version"
+      }),
+    /Command is not allowed/
+  );
+});
+
+test("run_command executes an allowlisted command", async () => {
+  const { runTool } = await importDistModule("tools.js");
+  const result = await runTool("run_command", {
+    command: "npm run build"
+  });
+
+  assert.equal(result.command, "npm run build");
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /tsc -p tsconfig\.json/);
 });
 
 test("runAgent aggregates usage and terminates on final action", async () => {
@@ -138,6 +211,90 @@ test("runAgent aggregates usage and terminates on final action", async () => {
   assert.equal(result.final.message, "Done");
 });
 
+test("runAgent records plan actions and writes traces", async () => {
+  const { runAgent } = await importDistModule("agent.js");
+  let callCount = 0;
+
+  const result = await runAgent(
+    "Create something",
+    {
+      async callModel(messages) {
+        callCount += 1;
+
+        if (callCount === 1) {
+          return {
+            content: JSON.stringify({
+              type: "plan",
+              steps: ["Inspect", "Write"]
+            }),
+            usage: {
+              inputTokens: 2,
+              outputTokens: 3
+            }
+          };
+        }
+
+        assert.match(messages.at(-1).content, /Plan received/);
+        return {
+          content: JSON.stringify({
+            type: "final",
+            message: "Done after plan",
+            summary: []
+          }),
+          usage: {
+            inputTokens: 4,
+            outputTokens: 5
+          }
+        };
+      }
+    },
+    {
+      trace: true,
+      traceDirectory: ".agent-runs/test",
+      maxSteps: 3
+    }
+  );
+
+  assert.equal(result.steps, 2);
+  assert.equal(result.final.message, "Done after plan");
+  assert.ok(result.tracePath);
+
+  const trace = JSON.parse(await fs.readFile(result.tracePath, "utf8"));
+  assert.equal(trace.goal, "Create something");
+  assert.equal(trace.steps.length, 2);
+  assert.equal(trace.steps[0].action.type, "plan");
+  assert.equal(trace.final.message, "Done after plan");
+});
+
+test("runAgent stops at the configured max step limit", async () => {
+  const { runAgent } = await importDistModule("agent.js");
+
+  await assert.rejects(
+    () =>
+      runAgent(
+        "Never finish",
+        {
+          async callModel() {
+            return {
+              content: JSON.stringify({
+                type: "plan",
+                steps: ["Keep planning"]
+              }),
+              usage: {
+                inputTokens: 1,
+                outputTokens: 1
+              }
+            };
+          }
+        },
+        {
+          maxSteps: 1
+        }
+      ),
+    /MAX_STEPS=1/
+  );
+});
+
 test("CLI --help prints usage and exits cleanly", () => {
   const result = spawnSync("node", ["dist/index.js", "--help"], {
     cwd: projectRoot,
@@ -146,6 +303,7 @@ test("CLI --help prints usage and exits cleanly", () => {
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /Usage: npm start --/);
+  assert.match(result.stdout, /--trace/);
 });
 
 test("CLI without a goal exits with code 1", () => {
@@ -156,4 +314,27 @@ test("CLI without a goal exits with code 1", () => {
 
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Usage: npm start --/);
+});
+
+test("CLI parses trace, max-step, and output-root flags", async () => {
+  const { parseCliArgs } = await importDistModule("index.js");
+  const result = parseCliArgs([
+    "--trace",
+    "--max-steps",
+    "7",
+    "--output-root",
+    "generated-apps/custom",
+    "Create",
+    "app"
+  ]);
+
+  assert.deepEqual(result, {
+    kind: "run",
+    goal: "Create app",
+    options: {
+      trace: true,
+      maxSteps: 7,
+      outputRoot: "generated-apps/custom"
+    }
+  });
 });

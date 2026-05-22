@@ -29,6 +29,8 @@ That means:
 
 This project does not use a TypeScript runtime loader. That is intentional: the build step is explicit, so you can clearly see the difference between source code and runtime output.
 
+The project uses `zod` for runtime validation. TypeScript checks your source code before runtime; `zod` checks data that arrives while the program is running, such as model JSON and tool inputs.
+
 ## 2. The Compiler Config
 
 The TypeScript compiler is configured in `tsconfig.json`.
@@ -163,13 +165,19 @@ export interface ToolCallAction {
   readonly reason: string;
 }
 
+export interface PlanAction {
+  readonly type: "plan";
+  readonly steps: string[];
+  readonly message?: string;
+}
+
 export interface FinalAction {
   readonly type: "final";
   readonly message: string;
   readonly summary: string[];
 }
 
-export type AgentAction = ToolCallAction | FinalAction;
+export type AgentAction = ToolCallAction | PlanAction | FinalAction;
 ```
 
 The `type` field is the discriminator. TypeScript uses it to narrow the union.
@@ -188,11 +196,38 @@ if (action.type === "final") {
 
 Inside that `if` block, TypeScript knows `action` is a `FinalAction`, so `action.message` and `action.summary` are safe to use.
 
-Later, after the final case has returned, TypeScript understands that the remaining action must be a `ToolCallAction`.
+The same pattern works for `plan` actions. When the code checks `action.type === "plan"`, TypeScript knows `action.steps` is available.
 
 This is one of the most useful TypeScript patterns in the project.
 
-## 7. Why `unknown` Is Used for Unsafe Data
+## 7. Zod Schemas for Runtime Validation
+
+In `src/agent.ts`, the model response is validated with schemas:
+
+```ts
+const finalActionSchema = z
+  .object({
+    type: z.literal("final"),
+    message: z.string(),
+    summary: z.array(z.string()).default([])
+  })
+  .transform(
+    (value): FinalAction => ({
+      type: "final",
+      message: value.message,
+      summary: value.summary
+    })
+  );
+```
+
+This does two useful things:
+
+- validates that runtime data has the expected shape
+- transforms the parsed data into the internal TypeScript type
+
+The same idea is used in `src/tools.ts` for tool inputs. For example, `replace_in_file` requires `path`, `search`, and `replacement` strings before it can run.
+
+## 8. Why `unknown` Is Used for Unsafe Data
 
 Data from these places is not trustworthy:
 
@@ -247,7 +282,7 @@ if (typeof parsed === "object" && parsed !== null) {
 
 Use `unknown` at system boundaries. Convert it into trusted application types with validation.
 
-## 8. Type Guards
+## 9. Type Guards
 
 A type guard is a function that checks a value at runtime and teaches TypeScript about the result.
 
@@ -279,7 +314,7 @@ if (isRecord(parsed)) {
 
 Without the guard, TypeScript would not allow `parsed.type`, because `parsed` might be a number, string, null, or array.
 
-## 9. `Record<string, unknown>`
+## 10. `Record<string, unknown>`
 
 This type appears in a few places:
 
@@ -300,23 +335,17 @@ const input: Record<string, unknown> = {
 
 It does not say that `path` is definitely a string. It says only that `path` may exist, and if it does, its value is currently unknown.
 
-That is why `src/tools.ts` has helpers like:
+That is why `src/tools.ts` validates inputs with schemas like:
 
 ```ts
-function getRequiredString(value: unknown, propertyName: string): string {
-  const parsed = getOptionalString(value, propertyName);
-
-  if (parsed === undefined) {
-    throw new Error(`Tool input "${propertyName}" is required.`);
-  }
-
-  return parsed;
-}
+const runCommandInputSchema = z.object({
+  command: z.string().min(1)
+});
 ```
 
-The runtime validates the unknown value. After validation, TypeScript knows the result is a `string`.
+The runtime validates the unknown value. After validation, TypeScript knows the result has the required fields.
 
-## 10. Optional Properties
+## 11. Optional Properties
 
 In `src/types.ts`:
 
@@ -345,7 +374,7 @@ This makes sense because:
 
 Optional properties are common when modeling data that changes shape depending on context.
 
-## 11. Indexed Access Types
+## 12. Indexed Access Types
 
 This line is worth understanding:
 
@@ -375,7 +404,7 @@ then `AgentAction["type"]` becomes:
 
 The benefit is that `PromptLogEntry` stays connected to `AgentAction`. If a third action type is added later, the log type updates automatically.
 
-## 12. `readonly`
+## 13. `readonly`
 
 Many interfaces use `readonly`:
 
@@ -399,7 +428,7 @@ usage.inputTokens = 12; // TypeScript error
 
 `readonly` is a compile-time rule. It does not freeze objects at runtime. It helps communicate intent: once this object is created, code should not mutate that property.
 
-## 13. Async Return Types and `Promise<T>`
+## 14. Async Return Types and `Promise<T>`
 
 Async functions return promises.
 
@@ -421,7 +450,7 @@ This says:
 
 Because it is `async`, the return type must be `Promise<OllamaCallResult>`, not just `OllamaCallResult`.
 
-## 14. `Partial<T>` for Dependency Injection
+## 15. `Partial<T>` for Dependency Injection
 
 `runAgent` accepts optional dependencies:
 
@@ -462,7 +491,7 @@ The runtime fills in missing dependencies from `defaultDependencies`.
 
 This is a common TypeScript testing pattern.
 
-## 15. The Tool Registry and `satisfies`
+## 16. The Tool Registry and `satisfies`
 
 The most advanced type in the project is in `src/tools.ts`:
 
@@ -519,7 +548,18 @@ That means TypeScript can catch mistakes like:
 
 This is the main place where TypeScript prevents the tool definitions and executable handlers from drifting apart.
 
-## 16. Why `runTool` Uses a `switch`
+The current registry includes:
+
+- `list_files`
+- `read_file`
+- `write_file`
+- `replace_in_file`
+- `make_directory`
+- `run_command`
+
+Adding a new tool is a good TypeScript exercise because you must update `ToolInputByName`, `ToolResultByName`, and `toolRegistry`.
+
+## 17. Why `runTool` Uses a `switch`
 
 The runtime receives a tool name as a plain string:
 
@@ -548,14 +588,14 @@ switch (name as ToolName) {
 
 The `switch` is a little more verbose than dynamic indexing, but it keeps each handler connected to its exact input parser. This makes the compiler happier under `strict: true`.
 
-## 17. CLI Types in `src/index.ts`
+## 18. CLI Types in `src/index.ts`
 
 The CLI parser uses another discriminated union:
 
 ```ts
 export type CliParseResult =
   | { readonly kind: "help" }
-  | { readonly kind: "run"; readonly goal: string }
+  | { readonly kind: "run"; readonly goal: string; readonly options: AgentRunOptions }
   | { readonly kind: "error"; readonly message: string };
 ```
 
@@ -564,6 +604,8 @@ This models the three possible outcomes:
 - user asked for help
 - user provided a goal
 - user forgot the goal
+
+The `run` case also carries parsed options such as `trace`, `maxSteps`, and `outputRoot`.
 
 Then `main` narrows the result:
 
@@ -597,7 +639,7 @@ This avoids optional fields like:
 
 That shape is weaker because TypeScript cannot easily know which fields are valid together.
 
-## 18. Custom Error Classes
+## 19. Custom Error Classes
 
 In `src/agent.ts`:
 
@@ -626,7 +668,7 @@ assert.throws(() => parseJsonResponse("{"), ModelResponseError);
 
 Custom error classes are useful when the caller should be able to distinguish one failure category from another.
 
-## 19. Type-Only Imports
+## 20. Type-Only Imports
 
 Some imports use `import type`:
 
@@ -653,7 +695,7 @@ import type { ToolName } from "./types.js"; // compile-time type
 
 This matters more in ESM projects because TypeScript is careful about what exists at runtime.
 
-## 20. `as const`
+## 21. `as const`
 
 In `src/config.ts`:
 
@@ -675,7 +717,7 @@ With `as const`, TypeScript infers the exact literal type:
 
 For config constants, this communicates that the value is intentionally fixed.
 
-## 21. `satisfies` in JSON Stringification
+## 22. `satisfies` in JSON Stringification
 
 In `src/agent.ts`:
 
@@ -706,7 +748,7 @@ TypeScript would catch the missing `tool` property.
 
 The runtime output is still just normal JSON.
 
-## 22. Runtime Validation vs TypeScript Types
+## 23. Runtime Validation vs TypeScript Types
 
 This is one of the most important lessons:
 
@@ -731,9 +773,28 @@ if (typeof content !== "string" || content.length === 0) {
 TypeScript and runtime validation solve different problems:
 
 - TypeScript catches mistakes in your code before running it.
-- Runtime checks protect you from external data that may be malformed.
+- Runtime checks and `zod` schemas protect you from external data that may be malformed.
 
-## 23. How to Read the Project in Order
+## 24. Trace Types
+
+The trace feature introduces types for durable debugging:
+
+```ts
+export interface AgentTrace {
+  readonly goal: string;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+  readonly steps: AgentTraceStep[];
+  readonly final?: FinalAction;
+  readonly error?: string;
+}
+```
+
+This is useful for learning because it shows how to model data that may be incomplete while a run is still active and complete after the run finishes.
+
+Optional properties like `completedAt`, `final`, and `error` reflect that lifecycle.
+
+## 25. How to Read the Project in Order
 
 For learning, read the TypeScript files in this order:
 
@@ -747,19 +808,20 @@ For learning, read the TypeScript files in this order:
 
 Start with `src/types.ts` because it defines the vocabulary. Then read the implementation files and ask: which imported type is each function promising to accept or return?
 
-## 24. Exercises to Learn Faster
+## 26. Exercises to Learn Faster
 
 These are small changes that will teach real TypeScript concepts in this codebase.
 
 1. Add a new action type called `"ask_user"` to `AgentAction`, then see which places TypeScript forces you to update.
-2. Add a new tool called `file_exists`, then wire it through `ToolInputByName`, `ToolResultByName`, and `toolRegistry`.
+2. Add a new tool called `file_exists`, then wire it through `ToolInputByName`, `ToolResultByName`, the zod input schema, and `toolRegistry`.
 3. Change `summary: string[]` to `summary?: string[]` and observe how `src/index.ts` must change.
 4. Temporarily remove `reason` from `ToolCallAction` and see which code depends on it.
 5. Replace one `unknown` with `any` in `parseJsonResponse`, then notice which compiler protections disappear.
 6. Add an invalid role like `"developer"` to a `ChatMessage` and confirm that TypeScript rejects it.
 7. Remove one tool from `toolRegistry` and watch `satisfies` catch it during `npm run build`.
+8. Add another allowlisted command and write a test that proves disallowed commands are still rejected.
 
-## 25. Useful Commands While Learning
+## 27. Useful Commands While Learning
 
 Build the TypeScript:
 
@@ -779,6 +841,12 @@ Run the app:
 npm start -- "Create a simple snake game in ./generated-apps/snake-game"
 ```
 
+Run with a trace file:
+
+```bash
+npm start -- --trace "Create a simple snake game in ./generated-apps/snake-game"
+```
+
 Show CLI help:
 
 ```bash
@@ -792,4 +860,3 @@ Clean mental model:
 - `types.ts` describes trusted internal shapes.
 - parser functions turn unsafe external data into trusted internal shapes.
 - `strict: true` makes TypeScript point out weak assumptions.
-

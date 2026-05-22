@@ -20,13 +20,19 @@ export interface ToolCallAction {
   readonly reason: string;
 }
 
+export interface PlanAction {
+  readonly type: "plan";
+  readonly steps: string[];
+  readonly message?: string;
+}
+
 export interface FinalAction {
   readonly type: "final";
   readonly message: string;
   readonly summary: string[];
 }
 
-export type AgentAction = ToolCallAction | FinalAction;
+export type AgentAction = ToolCallAction | PlanAction | FinalAction;
 
 export interface PromptLogEntry {
   readonly step: number;
@@ -38,17 +44,48 @@ export interface PromptLogEntry {
   tool?: string;
   reason?: string;
   toolInput?: string;
+  planSteps?: string[];
+  planMessage?: string;
   finalMessage?: string;
+}
+
+export interface AgentRunOptions {
+  readonly maxSteps?: number;
+  readonly trace?: boolean;
+  readonly traceDirectory?: string;
+  readonly outputRoot?: string;
 }
 
 export interface AgentRunResult {
   readonly steps: number;
   readonly final: FinalAction;
+  readonly tracePath?: string;
   readonly usage: {
     totalInputTokens: number;
     totalOutputTokens: number;
     prompts: PromptLogEntry[];
   };
+}
+
+export interface AgentTraceStep {
+  readonly step: number;
+  readonly requested: string;
+  readonly rawResponse: string;
+  readonly action: AgentAction;
+  readonly toolResult?: unknown;
+  readonly usage: OllamaUsage;
+}
+
+export interface AgentTrace {
+  readonly goal: string;
+  readonly startedAt: string;
+  readonly completedAt?: string;
+  readonly maxSteps: number;
+  readonly outputRoot: string;
+  readonly steps: AgentTraceStep[];
+  readonly final?: FinalAction;
+  readonly error?: string;
+  readonly usage: AgentRunResult["usage"];
 }
 
 export interface ToolResultEnvelope {
@@ -79,8 +116,16 @@ export interface ToolInputByName {
     path: string;
     content: string;
   };
+  readonly replace_in_file: {
+    path: string;
+    search: string;
+    replacement: string;
+  };
   readonly make_directory: {
     path: string;
+  };
+  readonly run_command: {
+    command: string;
   };
 }
 
@@ -97,10 +142,25 @@ export interface ToolResultByName {
     path: string;
     bytesWritten: number;
   };
+  readonly replace_in_file: {
+    path: string;
+    replacements: number;
+    bytesWritten: number;
+  };
   readonly make_directory: {
     path: string;
     created: true;
   };
+  readonly run_command: {
+    command: string;
+    exitCode: number | null;
+    stdout: string;
+    stderr: string;
+  };
 }
 
 export type ToolName = keyof ToolInputByName;
+
+export interface ToolRunOptions {
+  readonly outputRoot?: string;
+}
